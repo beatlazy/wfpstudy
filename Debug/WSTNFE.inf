@@ -1,0 +1,89 @@
+;
+; WSTNFE.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Sample ; TODO: edit Class
+ClassGuid={78A1C341-4539-11d3-B88D-00C04FAD5171} ; TODO: edit ClassGuid
+Provider=%ManufacturerName%
+CatalogFile=WSTNFE.cat
+DriverVer = 04/30/2018,12.50.16.7
+
+[DestinationDirs]
+DefaultDestDir = 12
+WSTNFE_Device_CoInstaller_CopyFiles = 11
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=SampleClassReg
+
+[SampleClassReg]
+HKR,,,0,%ClassName%
+HKR,,Icon,,-5
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+WSTNFE.sys  = 1,,
+;
+
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTx86
+
+[Standard.NTx86]
+%WSTNFE.DeviceDesc%=WSTNFE_Device, Root\WSTNFE ; TODO: edit hw-id
+
+[WSTNFE_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+WSTNFE.sys
+
+;-------------- Service installation
+[WSTNFE_Device.NT.Services]
+AddService = WSTNFE,%SPSVCINST_ASSOCSERVICE%, WSTNFE_Service_Inst
+
+; -------------- WSTNFE driver install sections
+[WSTNFE_Service_Inst]
+DisplayName    = %WSTNFE.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\WSTNFE.sys
+
+;
+;--- WSTNFE_Device Coinstaller installation ------
+;
+
+[WSTNFE_Device.NT.CoInstallers]
+AddReg=WSTNFE_Device_CoInstaller_AddReg
+CopyFiles=WSTNFE_Device_CoInstaller_CopyFiles
+
+[WSTNFE_Device_CoInstaller_AddReg]
+;
+
+
+[WSTNFE_Device_CoInstaller_CopyFiles]
+;
+
+
+[WSTNFE_Device.NT.Wdf]
+KmdfService =  WSTNFE, WSTNFE_wdfsect
+[WSTNFE_wdfsect]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ClassName="Samples" ; TODO: edit ClassName
+DiskName = "WSTNFE Installation Disk"
+WSTNFE.DeviceDesc = "WSTNFE Device"
+WSTNFE.SVCDESC = "WSTNFE Service"

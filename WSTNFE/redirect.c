@@ -1,7 +1,147 @@
 #include "Driver.h"
+//#include <ntifs.h>
+#include <ntddk.h>
+#include <ndis.h>
+#include <fwpsk.h>
+#include <fwpmk.h>
+#include <wdm.h>
+
+#include <MSTCPIP.h>       /// Include\Shared
+
+
 HANDLE gEngineHandle;
 
 UINT32  gAleConnectCalloutIdV4;
+
+NTSTATUS NTAPI WSTNFE_NotifyFn1(
+	_In_       FWPS_CALLOUT_NOTIFY_TYPE notifyType,
+	_In_ const GUID                     *filterKey,
+	_In_ const FWPS_FILTER1             *filter
+);
+
+NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
+	_Inout_ REDIRECT_DATA** ppRedirectData);
+
+
+VOID ClassifyProxyByALERedirect(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
+	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
+	_Inout_opt_ VOID* pLayerData,
+	_In_opt_ const VOID* pClassifyContext,
+	_In_ const FWPS_FILTER* pFilter,
+	_In_ UINT64 flowContext,
+	_Inout_ FWPS_CLASSIFY_OUT* pClassifyOut);
+
+void
+SFDeregistryCallouts(
+	__in PDEVICE_OBJECT DeviceObject
+);
+
+NTSTATUS
+SFRegisterALEClassifyCallouts(
+	__in const GUID* layerKey,
+	__in const GUID* calloutKey,
+	__in void* DeviceObject,
+	__out UINT32* calloutId
+);
+
+NTSTATUS SFAddFilter(
+	__in const wchar_t* filterName,
+	__in const wchar_t* filterDesc,
+	__in const GUID* layerKey,
+	__in const GUID* calloutKey
+);
+
+inline VOID KrnlHlprRedirectDataPurge(_Inout_ REDIRECT_DATA* pRedirectData)
+{
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" ---> KrnlHlprRedirectDataPurge()\n");
+
+#endif /// DBG
+
+	NT_ASSERT(pRedirectData);
+
+	if (pRedirectData->pWritableLayerData)
+	{
+		FwpsApplyModifiedLayerData(pRedirectData->classifyHandle,
+			pRedirectData->pWritableLayerData,
+			FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
+
+		pRedirectData->pWritableLayerData = 0;
+	}
+
+	if (pRedirectData->classifyHandle)
+	{
+		if (pRedirectData->isPended)
+		{
+			FwpsCompleteClassify(pRedirectData->classifyHandle,
+				0,
+				pRedirectData->pClassifyOut);
+
+			pRedirectData->isPended = FALSE;
+		}
+
+#if(NTDDI_VERSION >= NTDDI_WIN8)
+
+		if (pRedirectData->redirectHandle)
+		{
+			FwpsRedirectHandleDestroy(pRedirectData->redirectHandle);
+
+			pRedirectData->redirectHandle = 0;
+		}
+
+#endif
+
+		FwpsReleaseClassifyHandle(pRedirectData->classifyHandle);
+		pRedirectData->classifyHandle = 0;
+	}
+	RtlZeroMemory(pRedirectData,
+		sizeof(REDIRECT_DATA));
+
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" <--- KrnlHlprRedirectDataPurge()\n");
+
+#endif /// DBG
+
+	return;
+}
+
+
+inline VOID KrnlHlprRedirectDataDestroy(_Inout_ REDIRECT_DATA** ppRedirectData)
+{
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" ---> KrnlHlprRedirectDataDestroy()\n");
+
+#endif /// DBG
+
+	NT_ASSERT(ppRedirectData);
+
+	if (*ppRedirectData)
+	{
+		KrnlHlprRedirectDataPurge(*ppRedirectData);
+
+		HLPR_DELETE(*ppRedirectData,
+			WSTNFE_TAG);
+	}
+
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" <--- KrnlHlprRedirectDataDestroy()\n");
+
+#endif /// DBG
+
+	return;
+}
 
 
 NTSTATUS
@@ -105,6 +245,8 @@ Exit:
 	return Status;
 }
 
+
+	
 void
 SFDeregistryCallouts(
 	__in PDEVICE_OBJECT DeviceObject
@@ -129,8 +271,8 @@ SFRegisterALEClassifyCallouts(
 {
 	NTSTATUS Status = STATUS_SUCCESS;
 
-	FWPS_CALLOUT1 sCallout = { 0 };
-	FWPS_CALLOUT1 mCallout = { 0 };
+	FWPS_CALLOUT sCallout = { 0 };
+	FWPM_CALLOUT mCallout = { 0 };
 
 	FWPM_DISPLAY_DATA0 DisplayData = { 0 };
 
@@ -141,7 +283,7 @@ SFRegisterALEClassifyCallouts(
 	if (IsEqualGUID(layerKey, &FWPM_LAYER_ALE_AUTH_CONNECT_V4))
 	{
 		sCallout.classifyFn = ClassifyProxyByALERedirect;
-		sCallout.notifyFn = WSTNFE_NotifyFn1;
+		//sCallout.notifyFn = WSTNFE_NotifyFn1;
 	}
 	else
 	{
@@ -149,7 +291,7 @@ SFRegisterALEClassifyCallouts(
 		//sCallout.notifyFn = SFALERecvAcceptNotify;
 	}
 
-	Status = FwpsCalloutRegister1(DeviceObject,
+	Status = FwpsCalloutRegister(DeviceObject,
 		&sCallout,
 		calloutId);
 
@@ -166,7 +308,7 @@ SFRegisterALEClassifyCallouts(
 	mCallout.calloutKey = *calloutKey;
 
 
-	Status = FwpmCalloutAdd0(gEngineHandle,
+	Status = FwpmCalloutAdd(gEngineHandle,
 		&mCallout,
 		NULL,
 		NULL);
@@ -199,7 +341,7 @@ Exit:
 
 	return Status;
 }
-SFAddFilter(
+NTSTATUS SFAddFilter(
 	__in const wchar_t* filterName,
 	__in const wchar_t* filterDesc,
 	__in const GUID* layerKey,
@@ -253,6 +395,8 @@ VOID ClassifyProxyByALERedirect(_In_ const FWPS_INCOMING_VALUES* pClassifyValues
 
 
 }
+
+/*
 NTSTATUS NTAPI WSTNFE_NotifyFn1(
 	_In_       FWPS_CALLOUT_NOTIFY_TYPE notifyType,
 	_In_ const GUID                     *filterKey,
@@ -262,59 +406,8 @@ NTSTATUS NTAPI WSTNFE_NotifyFn1(
 	return STATUS_SUCCESS;
 
 }
-NTSTATUS KrnlHlprRedirectDataCreate(_Outptr_ REDIRECT_DATA** ppRedirectData,
-	_In_ const VOID* pClassifyContext,
-	_In_ const FWPS_FILTER* pFilter,
-	_In_ FWPS_CLASSIFY_OUT* pClassifyOut)
-{
-#if DBG
+*/
 
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" ---> KrnlHlprRedirectDataCreate()\n");
-
-#endif /// DBG
-
-	NT_ASSERT(ppRedirectData);
-	NT_ASSERT(pClassifyContext);
-	NT_ASSERT(pFilter);
-	NT_ASSERT(pClassifyOut);
-
-	NTSTATUS status = STATUS_SUCCESS;
-
-	HLPR_NEW(*ppRedirectData,
-		REDIRECT_DATA,
-		WSTNFE_TAG);
-	HLPR_BAIL_ON_ALLOC_FAILURE(*ppRedirectData,
-		status);
-
-	status = KrnlHlprRedirectDataPopulate(*ppRedirectData,
-		pClassifyContext,
-		pFilter,
-		pClassifyOut);
-
-HLPR_BAIL_LABEL:
-
-#pragma warning(push)
-#pragma warning(disable: 6001) /// *ppRedirectData initialized with call to HLPR_NEW & KrnlHlprRedirectDataPopulate 
-
-	if (status != STATUS_SUCCESS &&
-		*ppRedirectData)
-		KrnlHlprRedirectDataDestroy(ppRedirectData);
-
-#pragma warning(pop)
-
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" <--- KrnlHlprRedirectDataCreate() [status: %#x]\n",
-		status);
-
-#endif /// DBG
-
-	return status;
-}
 
 
 NTSTATUS KrnlHlprRedirectDataPopulate(_Inout_ REDIRECT_DATA* pRedirectData,
@@ -352,12 +445,12 @@ NTSTATUS KrnlHlprRedirectDataPopulate(_Inout_ REDIRECT_DATA* pRedirectData,
 			" !!!! KrnlHlprRedirectDataPopulate : FwpsAcquireClassifyHandle() [status: %#x]\n",
 			status);
 
-		HLPR_BAIL;
+		//HLPR_BAIL;
 	}
 
 #if(NTDDI_VERSION >= NTDDI_WIN8)
 
-	status = FwpsRedirectHandleCreate(&WFPSAMPLER_PROVIDER,
+	status = FwpsRedirectHandleCreate(&GUID_WSTNFE_PROVIDER,
 		0,
 		&(pRedirectData->redirectHandle));
 	if (status != STATUS_SUCCESS)
@@ -367,7 +460,7 @@ NTSTATUS KrnlHlprRedirectDataPopulate(_Inout_ REDIRECT_DATA* pRedirectData,
 			" !!!! KrnlHlprRedirectDataPopulate : FwpsRedirectHandleCreate() [status: %#x]\n",
 			status);
 
-		HLPR_BAIL;
+		//HLPR_BAIL;
 	}
 
 #endif
@@ -384,7 +477,7 @@ NTSTATUS KrnlHlprRedirectDataPopulate(_Inout_ REDIRECT_DATA* pRedirectData,
 			" !!!! KrnlHlprRedirectDataPopulate : FwpsAcquireWritableLayerDataPointer() [status: %#x]\n",
 			status);
 
-		HLPR_BAIL;
+		//HLPR_BAIL;
 	}
 
 	pRedirectData->pProxyData = (PC_PROXY_DATA*)pFilter->providerContext->dataBuffer->data;
@@ -406,7 +499,59 @@ HLPR_BAIL_LABEL:
 	return status;
 }
 
+NTSTATUS KrnlHlprRedirectDataCreate(_Outptr_ REDIRECT_DATA** ppRedirectData,
+	_In_ const VOID* pClassifyContext,
+	_In_ const FWPS_FILTER* pFilter,
+	_In_ FWPS_CLASSIFY_OUT* pClassifyOut)
+{
+#if DBG
 
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" ---> KrnlHlprRedirectDataCreate()\n");
+
+#endif /// DBG
+
+	NT_ASSERT(ppRedirectData);
+	NT_ASSERT(pClassifyContext);
+	NT_ASSERT(pFilter);
+	NT_ASSERT(pClassifyOut);
+
+	NTSTATUS status = STATUS_SUCCESS;
+
+	HLPR_NEW(*ppRedirectData,
+		REDIRECT_DATA,
+		WSTNFE_TAG);
+	//HLPR_BAIL_ON_ALLOC_FAILURE(*ppRedirectData,
+	//	status);
+
+	status = KrnlHlprRedirectDataPopulate(*ppRedirectData,
+		pClassifyContext,
+		pFilter,
+		pClassifyOut);
+
+HLPR_BAIL_LABEL:
+
+#pragma warning(push)
+#pragma warning(disable: 6001) /// *ppRedirectData initialized with call to HLPR_NEW & KrnlHlprRedirectDataPopulate 
+
+	if (status != STATUS_SUCCESS &&
+		*ppRedirectData)
+		KrnlHlprRedirectDataDestroy(ppRedirectData);
+
+#pragma warning(pop)
+
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" <--- KrnlHlprRedirectDataCreate() [status: %#x]\n",
+		status);
+
+#endif /// DBG
+
+	return status;
+}
 
 NTSTATUS TriggerProxyByALERedirectInline(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
 	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
@@ -439,8 +584,8 @@ NTSTATUS TriggerProxyByALERedirectInline(_In_ const FWPS_INCOMING_VALUES* pClass
 	HLPR_NEW(pClassifyData,
 		CLASSIFY_DATA,
 		WSTNFE_TAG);
-	HLPR_BAIL_ON_ALLOC_FAILURE(pClassifyData,
-		status);
+	//HLPR_BAIL_ON_ALLOC_FAILURE(pClassifyData,
+	//	status);
 
 	pClassifyData->pClassifyValues = pClassifyValues;
 	pClassifyData->pMetadataValues = pMetadata;
@@ -515,9 +660,9 @@ NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
 	HLPR_NEW_ARRAY(pSockAddrStorage,
 		SOCKADDR_STORAGE,
 		2,
-		WFPSAMPLER_CALLOUT_DRIVER_TAG);
-	HLPR_BAIL_ON_ALLOC_FAILURE(pSockAddrStorage,
-		status);
+		WSTNFE_TAG);
+//	HLPR_BAIL_ON_ALLOC_FAILURE(pSockAddrStorage,
+//		status);
 
 	/// Pass original remote destination values to query them in user mode
 	RtlCopyMemory(&(pSockAddrStorage[0]),
@@ -534,10 +679,10 @@ NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
 
 #endif /// (NTDDI_VERSION >= NTDDI_WIN8)
 
-	pProtocolValue = KrnlHlprFwpValueGetFromFwpsIncomingValues(pClassifyValues,
-		&FWPM_CONDITION_IP_PROTOCOL);
-	if (pProtocolValue)
-		ipProtocol = pProtocolValue->uint8;
+	//pProtocolValue = KrnlHlprFwpValueGetFromFwpsIncomingValues(pClassifyValues,
+	//	&FWPM_CONDITION_IP_PROTOCOL);
+	//if (pProtocolValue)
+	//	ipProtocol = pProtocolValue->uint8;
 
 	/// For non-TCP, this setting will not be enforced being that local redirection of this tuple is only 
 	/// available during bind time. and ideally redirection should be performed using ALE_BIND_REDIRECT instead.
@@ -613,97 +758,4 @@ NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
 #endif /// DBG
 
 				   return status;
-}
-inline VOID KrnlHlprRedirectDataPurge(_Inout_ REDIRECT_DATA* pRedirectData)
-{
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" ---> KrnlHlprRedirectDataPurge()\n");
-
-#endif /// DBG
-
-	NT_ASSERT(pRedirectData);
-
-	if (pRedirectData->pWritableLayerData)
-	{
-		FwpsApplyModifiedLayerData(pRedirectData->classifyHandle,
-			pRedirectData->pWritableLayerData,
-			FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
-
-		pRedirectData->pWritableLayerData = 0;
-	}
-
-	if (pRedirectData->classifyHandle)
-	{
-		if (pRedirectData->isPended)
-		{
-			FwpsCompleteClassify(pRedirectData->classifyHandle,
-				0,
-				pRedirectData->pClassifyOut);
-
-			pRedirectData->isPended = FALSE;
-		}
-
-#if(NTDDI_VERSION >= NTDDI_WIN8)
-
-		if (pRedirectData->redirectHandle)
-		{
-			FwpsRedirectHandleDestroy(pRedirectData->redirectHandle);
-
-			pRedirectData->redirectHandle = 0;
-		}
-
-#endif
-
-		FwpsReleaseClassifyHandle(pRedirectData->classifyHandle);
-
-		pRedirectData->classifyHandle = 0;
-	}
-
-	RtlZeroMemory(pRedirectData,
-		sizeof(REDIRECT_DATA));
-
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" <--- KrnlHlprRedirectDataPurge()\n");
-
-#endif /// DBG
-
-	return;
-}
-
-
-inline VOID KrnlHlprRedirectDataDestroy(_Inout_ REDIRECT_DATA** ppRedirectData)
-{
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" ---> KrnlHlprRedirectDataDestroy()\n");
-
-#endif /// DBG
-
-	NT_ASSERT(ppRedirectData);
-
-	if (*ppRedirectData)
-	{
-		KrnlHlprRedirectDataPurge(*ppRedirectData);
-
-		HLPR_DELETE(*ppRedirectData,
-			WFPSAMPLER_SYSLIB_TAG);
-	}
-
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" <--- KrnlHlprRedirectDataDestroy()\n");
-
-#endif /// DBG
-
-	return;
 }

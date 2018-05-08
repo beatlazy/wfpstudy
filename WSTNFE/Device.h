@@ -18,6 +18,15 @@ Environment:
 
 EXTERN_C_START
 
+
+#define PCPDF_PROXY_LOCAL_ADDRESS   (0x1)
+#define PCPDF_PROXY_LOCAL_PORT   (0x2)
+#define PCPDF_PROXY_REMOTE_ADDRESS   (0x3)
+#define PCPDF_PROXY_REMOTE_PORT   (0x4)
+
+
+
+
 //
 // The device context performs the same job as
 // a WDM device extension in the driver frameworks

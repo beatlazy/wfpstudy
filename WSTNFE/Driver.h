@@ -19,12 +19,16 @@ Environment:
 #include <Fwpsk.h>
 #include <Fwpmtypes.h>
 #include <initguid.h>
-#include <ntifs.h>
-#include <ntddk.h>
-#include <ndis.h>
-#include <fwpsk.h>
-#include <fwpmk.h>
-#include <wdm.h>
+
+#include <ntintsafe.h>                /// Inc
+#include <ntstrsafe.h>                /// Inc
+
+//#include <ntifs.h>
+//#include <ntddk.h>
+//#include <ndis.h>
+//#include <fwpsk.h>
+//#include <fwpmk.h>
+//#include <wdm.h>
 
 #include "device.h"
 #include "queue.h"
@@ -43,7 +47,7 @@ EVT_WDF_OBJECT_CONTEXT_CLEANUP WSTNFEEvtDriverContextCleanup;
 EXTERN_C_END
 
 
-#define WSTNFE_TAG  L"WSTNFE"
+#define WSTNFE_TAG  (UINT32)"WNFE"
 
 #define HLPR_NEW(pPtr,object,tag) \
 for(;pPtr==0;					\
@@ -146,7 +150,7 @@ MSDN_Ref:                                                                       
 #define HLPR_REG_CLOSE_KEY(keyHandle) \
 	if(keyHandle)                     \
 	{									\
-		RegCloseKey(keyHandle);				\	
+		RegCloseKey(keyHandle);				\
 		keyHandle = 0;					\
 	}
 
@@ -154,8 +158,8 @@ MSDN_Ref:                                                                       
 #define HLPR_NEW_ARRAY(pPtr,object,count,tag) \
 for(;pPtr=0;)			\
 {					\
-	size_t SAFE_SIZE = 0;
-	if (RtlSizeTMult(sizeof(object), (size_t)count, &SAFE_SIZE) == STATUS_SUCCESS &&
+	size_t SAFE_SIZE = 0;							\
+	if (RtlSizeTMult(sizeof(object), (size_t)count, &SAFE_SIZE) == STATUS_SUCCESS &&     \
 		SAFE_SIZE >= (sizeof(object)*count))		\
 	{						\
 		pPtr = (object *)ExAllocatePoolWithTag(NonPagedPoolNx, \
@@ -168,4 +172,5 @@ for(;pPtr=0;)			\
 }			
 
 
-
+#define HLPR_DELETE_ARRAY(pPtr, tag) \
+   HLPR_DELETE(pPtr, tag)

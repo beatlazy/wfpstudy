@@ -1,4 +1,4 @@
-/*++
+﻿/*++
 
 Module Name:
 
@@ -13,6 +13,20 @@ Environment:
     Kernel-mode Driver Framework
 
 --*/
+
+
+/*
+#define FILTER_MAJOR_NDIS_VERSION   6
+
+#if defined(NDIS60)
+#define FILTER_MINOR_NDIS_VERSION   0
+#elif defined(NDIS620)
+#define FILTER_MINOR_NDIS_VERSION   20
+#elif defined(NDIS630)
+#define FILTER_MINOR_NDIS_VERSION   30
+#endif
+*/
+
 
 #include <ntddk.h>
 #include <wdf.h>
@@ -47,7 +61,7 @@ EVT_WDF_OBJECT_CONTEXT_CLEANUP WSTNFEEvtDriverContextCleanup;
 EXTERN_C_END
 
 
-#define WSTNFE_TAG  (UINT32)"WNFE"
+#define WSTNFE_TAG  (ULONG)'WNFE'
 
 #define HLPR_NEW(pPtr,object,tag) \
 for(;pPtr==0;					\
@@ -174,3 +188,10 @@ for(;pPtr=0;)			\
 
 #define HLPR_DELETE_ARRAY(pPtr, tag) \
    HLPR_DELETE(pPtr, tag)
+
+#define HLPR_BAIL_ON_FAILURE_WITH_LABEL(status, label) \
+   if(status != STATUS_SUCCESS)                        \
+      goto label
+
+#define HLPR_BAIL_ON_FAILURE(status)                        \
+   HLPR_BAIL_ON_FAILURE_WITH_LABEL(status, HLPR_BAIL_LABEL)

@@ -1,4 +1,4 @@
-#include "Driver.h"
+﻿#include "Driver.h"
 //#include <ntifs.h>
 #include <ntddk.h>
 #include <ndis.h>
@@ -12,44 +12,6 @@
 HANDLE gEngineHandle;
 
 UINT32  gAleConnectCalloutIdV4;
-
-NTSTATUS NTAPI WSTNFE_NotifyFn1(
-	_In_       FWPS_CALLOUT_NOTIFY_TYPE notifyType,
-	_In_ const GUID                     *filterKey,
-	_In_ const FWPS_FILTER1             *filter
-);
-
-NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
-	_Inout_ REDIRECT_DATA** ppRedirectData);
-
-
-VOID ClassifyProxyByALERedirect(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
-	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
-	_Inout_opt_ VOID* pLayerData,
-	_In_opt_ const VOID* pClassifyContext,
-	_In_ const FWPS_FILTER* pFilter,
-	_In_ UINT64 flowContext,
-	_Inout_ FWPS_CLASSIFY_OUT* pClassifyOut);
-
-void
-SFDeregistryCallouts(
-	__in PDEVICE_OBJECT DeviceObject
-);
-
-NTSTATUS
-SFRegisterALEClassifyCallouts(
-	__in const GUID* layerKey,
-	__in const GUID* calloutKey,
-	__in void* DeviceObject,
-	__out UINT32* calloutId
-);
-
-NTSTATUS SFAddFilter(
-	__in const wchar_t* filterName,
-	__in const wchar_t* filterDesc,
-	__in const GUID* layerKey,
-	__in const GUID* calloutKey
-);
 
 inline VOID KrnlHlprRedirectDataPurge(_Inout_ REDIRECT_DATA* pRedirectData)
 {
@@ -144,257 +106,8 @@ inline VOID KrnlHlprRedirectDataDestroy(_Inout_ REDIRECT_DATA** ppRedirectData)
 }
 
 
-NTSTATUS
-SFRegistryCallouts(
-	__in PDEVICE_OBJECT DeviceObject
-)
-{
-	NTSTATUS        Status = STATUS_SUCCESS;
-	BOOLEAN         EngineOpened = FALSE;
-	BOOLEAN         InTransaction = FALSE;
-	FWPM_SESSION0   Session = { 0 };
-	FWPM_SUBLAYER0  FirewallSubLayer;
-
-	Session.flags = FWPM_SESSION_FLAG_DYNAMIC;
-
-	Status = FwpmEngineOpen0(NULL,
-		RPC_C_AUTHN_WINNT,
-		NULL,
-		&Session,
-		&gEngineHandle);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-	EngineOpened = TRUE;
-
-	Status = FwpmTransactionBegin0(gEngineHandle, 0);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-	InTransaction = TRUE;
-
-	RtlZeroMemory(&FirewallSubLayer, sizeof(FWPM_SUBLAYER0));
-
-	FirewallSubLayer.subLayerKey = GUID_WSTNFE_SUBLAYER;
-	FirewallSubLayer.displayData.name = L"Transport SimpleFirewall Sub-Layer";
-	FirewallSubLayer.displayData.description = L"Sub-Layer for use by Transport SimpleFirewall callouts";
-	FirewallSubLayer.flags = 0;
-	FirewallSubLayer.weight = 0;
-
-	Status = FwpmSubLayerAdd0(gEngineHandle, &FirewallSubLayer, NULL);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-	Status = SFRegisterALEClassifyCallouts(&FWPM_LAYER_ALE_CONNECT_REDIRECT_V4,
-		&GUID_REDIRECT_CALLOUT,
-		DeviceObject,
-		&gAleConnectCalloutIdV4);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-#if 0
-	Status = SFRegisterALEClassifyCallouts(&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-		&SF_ALE_RECV_ACCEPT_CALLOUT_V4,
-		DeviceObject,
-		&gAleRecvAcceptCalloutIdV4);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-#endif
 
 
-	Status = FwpmTransactionCommit0(gEngineHandle);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-	InTransaction = FALSE;
-
-Exit:
-
-	if (!NT_SUCCESS(Status))
-	{
-		if (InTransaction)
-		{
-			FwpmTransactionAbort0(gEngineHandle);
-		}
-
-		if (EngineOpened)
-		{
-			FwpmEngineClose0(gEngineHandle);
-			gEngineHandle = NULL;
-		}
-	}
-
-	return Status;
-}
-
-
-	
-void
-SFDeregistryCallouts(
-	__in PDEVICE_OBJECT DeviceObject
-)
-{
-	UNREFERENCED_PARAMETER(DeviceObject);
-
-	FwpmEngineClose0(gEngineHandle);
-	gEngineHandle = NULL;
-
-	FwpsCalloutUnregisterById0(gAleConnectCalloutIdV4);
-	//FwpsCalloutUnregisterById0(gAleRecvAcceptCalloutIdV4);
-}
-
-NTSTATUS
-SFRegisterALEClassifyCallouts(
-	__in const GUID* layerKey,
-	__in const GUID* calloutKey,
-	__in void* DeviceObject,
-	__out UINT32* calloutId
-)
-{
-	NTSTATUS Status = STATUS_SUCCESS;
-
-	FWPS_CALLOUT sCallout = { 0 };
-	FWPM_CALLOUT mCallout = { 0 };
-
-	FWPM_DISPLAY_DATA0 DisplayData = { 0 };
-
-	BOOLEAN calloutRegistered = FALSE;
-
-	sCallout.calloutKey = *calloutKey;
-
-	if (IsEqualGUID(layerKey, &FWPM_LAYER_ALE_AUTH_CONNECT_V4))
-	{
-		sCallout.classifyFn = ClassifyProxyByALERedirect;
-		//sCallout.notifyFn = WSTNFE_NotifyFn1;
-	}
-	else
-	{
-		//sCallout.classifyFn = SFALERecvAcceptClassify;
-		//sCallout.notifyFn = SFALERecvAcceptNotify;
-	}
-
-	Status = FwpsCalloutRegister(DeviceObject,
-		&sCallout,
-		calloutId);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-	calloutRegistered = TRUE;
-
-	DisplayData.name = L"Transport SimpleFirewall ALE Classify Callout";
-	DisplayData.description = L"Intercepts inbound or outbound connect attempts";
-
-	mCallout.calloutKey = *calloutKey;
-
-
-	Status = FwpmCalloutAdd(gEngineHandle,
-		&mCallout,
-		NULL,
-		NULL);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-	Status = SFAddFilter(L"Transport SimpleFirewall ALE Classify",
-		L"Intercepts inbound or outbound connect attempts",
-		layerKey,
-		calloutKey);
-
-	if (!NT_SUCCESS(Status))
-	{
-		goto Exit;
-	}
-
-Exit:
-
-	if (!NT_SUCCESS(Status))
-	{
-		if (calloutRegistered)
-		{
-			FwpsCalloutUnregisterById0(*calloutId);
-			*calloutId = 0;
-		}
-	}
-
-	return Status;
-}
-NTSTATUS SFAddFilter(
-	__in const wchar_t* filterName,
-	__in const wchar_t* filterDesc,
-	__in const GUID* layerKey,
-	__in const GUID* calloutKey
-)
-{
-	FWPM_FILTER0 Filter = { 0 };
-
-	Filter.layerKey = *layerKey;
-	Filter.displayData.name = (wchar_t*)filterName;
-	Filter.displayData.description = (wchar_t*)filterDesc;
-
-	Filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;
-	Filter.action.calloutKey = *calloutKey;
-	Filter.subLayerKey = GUID_WSTNFE_SUBLAYER;
-	Filter.weight.type = FWP_EMPTY;
-	Filter.rawContext = 0;
-
-	return FwpmFilterAdd0(gEngineHandle, &Filter, NULL, NULL);
-}
-
-
-VOID ClassifyProxyByALERedirect(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
-	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
-	_Inout_opt_ VOID* pLayerData,
-	_In_opt_ const VOID* pClassifyContext,
-	_In_ const FWPS_FILTER* pFilter,
-	_In_ UINT64 flowContext,
-	_Inout_ FWPS_CLASSIFY_OUT* pClassifyOut)
-{
-	NT_ASSERT(pClassifyValues);
-	NT_ASSERT(pMetadata);
-	NT_ASSERT(pLayerData);
-	NT_ASSERT(pClassifyContext);
-	NT_ASSERT(pFilter);
-	NT_ASSERT(pClassifyOut);
-	NT_ASSERT(pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V4 ||
-		pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V6 ||
-		pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V4 ||
-		pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V6);
-	NT_ASSERT(pFilter->providerContext);
-	NT_ASSERT(pFilter->providerContext->type == FWPM_GENERAL_CONTEXT);
-	NT_ASSERT(pFilter->providerContext->dataBuffer);
-	NT_ASSERT(pFilter->providerContext->dataBuffer->size == sizeof(PC_PROXY_DATA));
-	NT_ASSERT(pFilter->providerContext->dataBuffer->data);
-
-
-
-
-
-
-
-}
 
 /*
 NTSTATUS NTAPI WSTNFE_NotifyFn1(
@@ -553,80 +266,6 @@ HLPR_BAIL_LABEL:
 	return status;
 }
 
-NTSTATUS TriggerProxyByALERedirectInline(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
-	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
-	_Inout_ VOID* pLayerData,
-	_In_opt_ const VOID* pClassifyContext,
-	_In_ const FWPS_FILTER* pFilter,
-	_In_ UINT64 flowContext,
-	_Inout_ FWPS_CLASSIFY_OUT* pClassifyOut,
-	_Inout_ REDIRECT_DATA** ppRedirectData)
-{
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" ---> TriggerProxyByALERedirectInline()\n");
-
-#endif /// DBG
-
-	NT_ASSERT(pClassifyValues);
-	NT_ASSERT(pMetadata);
-	NT_ASSERT(pLayerData);
-	NT_ASSERT(pFilter);
-	NT_ASSERT(pClassifyOut);
-	NT_ASSERT(ppRedirectData);
-	NT_ASSERT(*ppRedirectData);
-
-	NTSTATUS       status = STATUS_SUCCESS;
-	CLASSIFY_DATA* pClassifyData = 0;
-
-	HLPR_NEW(pClassifyData,
-		CLASSIFY_DATA,
-		WSTNFE_TAG);
-	//HLPR_BAIL_ON_ALLOC_FAILURE(pClassifyData,
-	//	status);
-
-	pClassifyData->pClassifyValues = pClassifyValues;
-	pClassifyData->pMetadataValues = pMetadata;
-	pClassifyData->pPacket = pLayerData;
-	pClassifyData->pClassifyContext = pClassifyContext;
-	pClassifyData->pFilter = pFilter;
-	pClassifyData->flowContext = flowContext;
-	pClassifyData->pClassifyOut = pClassifyOut;
-
-	(*ppRedirectData)->pClassifyOut = pClassifyOut;
-
-	if (pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V4 ||
-		pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V6)
-		status = PerformProxyConnectRedirection(&pClassifyData,
-			ppRedirectData);
-	/*
-	else if (pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V4 ||
-		pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V6)
-		status = PerformProxySocketRedirection(&pClassifyData,
-			ppRedirectData);
-
-	*/
-
-
-HLPR_BAIL_LABEL:
-
-	HLPR_DELETE(pClassifyData,
-		WSTNFE_TAG);
-
-#if DBG
-
-	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
-		DPFLTR_INFO_LEVEL,
-		" <--- TriggerProxyByALERedirectInline() [status: %#x]\n",
-		status);
-
-#endif /// DBG
-
-	return status;
-}
-
 NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
 	_Inout_ REDIRECT_DATA** ppRedirectData)
 {
@@ -661,8 +300,8 @@ NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
 		SOCKADDR_STORAGE,
 		2,
 		WSTNFE_TAG);
-//	HLPR_BAIL_ON_ALLOC_FAILURE(pSockAddrStorage,
-//		status);
+	//	HLPR_BAIL_ON_ALLOC_FAILURE(pSockAddrStorage,
+	//		status);
 
 	/// Pass original remote destination values to query them in user mode
 	RtlCopyMemory(&(pSockAddrStorage[0]),
@@ -759,3 +398,404 @@ NTSTATUS PerformProxyConnectRedirection(_In_ CLASSIFY_DATA** ppClassifyData,
 
 				   return status;
 }
+
+
+
+NTSTATUS TriggerProxyByALERedirectInline(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
+	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
+	_Inout_ VOID* pLayerData,
+	_In_opt_ const VOID* pClassifyContext,
+	_In_ const FWPS_FILTER* pFilter,
+	_In_ UINT64 flowContext,
+	_Inout_ FWPS_CLASSIFY_OUT* pClassifyOut,
+	_Inout_ REDIRECT_DATA** ppRedirectData)
+{
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" ---> TriggerProxyByALERedirectInline()\n");
+
+#endif /// DBG
+
+	NT_ASSERT(pClassifyValues);
+	NT_ASSERT(pMetadata);
+	NT_ASSERT(pLayerData);
+	NT_ASSERT(pFilter);
+	NT_ASSERT(pClassifyOut);
+	NT_ASSERT(ppRedirectData);
+	NT_ASSERT(*ppRedirectData);
+
+	NTSTATUS       status = STATUS_SUCCESS;
+	CLASSIFY_DATA* pClassifyData = 0;
+
+	HLPR_NEW(pClassifyData,
+		CLASSIFY_DATA,
+		WSTNFE_TAG);
+	//HLPR_BAIL_ON_ALLOC_FAILURE(pClassifyData,
+	//	status);
+
+	pClassifyData->pClassifyValues = pClassifyValues;
+	pClassifyData->pMetadataValues = pMetadata;
+	pClassifyData->pPacket = pLayerData;
+	pClassifyData->pClassifyContext = pClassifyContext;
+	pClassifyData->pFilter = pFilter;
+	pClassifyData->flowContext = flowContext;
+	pClassifyData->pClassifyOut = pClassifyOut;
+
+	(*ppRedirectData)->pClassifyOut = pClassifyOut;
+
+	if (pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V4 ||
+		pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V6)
+		status = PerformProxyConnectRedirection(&pClassifyData,
+			ppRedirectData);
+	/*
+	else if (pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V4 ||
+		pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V6)
+		status = PerformProxySocketRedirection(&pClassifyData,
+			ppRedirectData);
+
+	*/
+
+
+HLPR_BAIL_LABEL:
+
+	HLPR_DELETE(pClassifyData,
+		WSTNFE_TAG);
+
+#if DBG
+
+	DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+		DPFLTR_INFO_LEVEL,
+		" <--- TriggerProxyByALERedirectInline() [status: %#x]\n",
+		status);
+
+#endif /// DBG
+
+	return status;
+}
+
+
+
+VOID ClassifyProxyByALERedirect(_In_ const FWPS_INCOMING_VALUES* pClassifyValues,
+	_In_ const FWPS_INCOMING_METADATA_VALUES* pMetadata,
+	_Inout_opt_ VOID* pLayerData,
+	_In_opt_ const VOID* pClassifyContext,
+	_In_ const FWPS_FILTER* pFilter,
+	_In_ UINT64 flowContext,
+	_Inout_ FWPS_CLASSIFY_OUT* pClassifyOut)
+{
+	NTSTATUS status = STATUS_SUCCESS;
+	UINT32  conditionIndex = FWPS_FIELD_ALE_CONNECT_REDIRECT_V4_FLAGS;
+
+	NT_ASSERT(pClassifyValues);
+	NT_ASSERT(pMetadata);
+	NT_ASSERT(pLayerData);
+	NT_ASSERT(pClassifyContext);
+	NT_ASSERT(pFilter);
+	NT_ASSERT(pClassifyOut);
+	NT_ASSERT(pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V4 ||
+		pClassifyValues->layerId == FWPS_LAYER_ALE_CONNECT_REDIRECT_V6 ||
+		pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V4 ||
+		pClassifyValues->layerId == FWPS_LAYER_ALE_BIND_REDIRECT_V6);
+	NT_ASSERT(pFilter->providerContext);
+	NT_ASSERT(pFilter->providerContext->type == FWPM_GENERAL_CONTEXT);
+	NT_ASSERT(pFilter->providerContext->dataBuffer);
+	NT_ASSERT(pFilter->providerContext->dataBuffer->size == sizeof(PC_PROXY_DATA));
+	NT_ASSERT(pFilter->providerContext->dataBuffer->data);
+
+	if (pLayerData&& pClassifyContext)
+	{
+		if (pClassifyOut->rights & FWPS_RIGHT_ACTION_WRITE &&
+			!(pClassifyValues->incomingValue[conditionIndex].value.uint32 & FWP_CONDITION_FLAG_IS_REAUTHORIZE))
+		{
+			REDIRECT_DATA *pRedirectData = 0;
+#pragma warning(push)
+#pragma warning(disable:6014)
+
+			status = KrnlHlprRedirectDataCreate(&pRedirectData,
+				pClassifyContext,
+				pFilter,
+				pClassifyOut);
+
+
+			HLPR_BAIL_ON_FAILURE(status);
+
+
+			if (pRedirectData->pProxyData->performInline)
+				status = TriggerProxyByALERedirectInline(pClassifyValues,
+					pMetadata,
+					pLayerData,
+					pClassifyContext,
+					pFilter,
+					flowContext,
+					pClassifyOut,
+					&pRedirectData);
+
+			/*
+			else
+			status = TriggerProxyByALERedirectOutOfBand(pClassifyValues,
+			pMetadata,
+			pLayerData,
+			pClassifyContext,
+			pFilter,
+			flowContext,
+			pClassifyOut,
+			pRedirectData);
+
+			*/
+
+
+		HLPR_BAIL_LABEL:
+
+			if (status != STATUS_SUCCESS)
+			{
+				DbgPrintEx(DPFLTR_IHVNETWORK_ID,
+					DPFLTR_ERROR_LEVEL,
+					" !!!! ClassifyProxyByALERedirect() [status: %#x]\n",
+					status);
+
+				if (pRedirectData)
+					KrnlHlprRedirectDataDestroy(&pRedirectData);
+
+				pClassifyOut->actionType = FWP_ACTION_BLOCK;
+			}
+
+
+		}
+	}
+
+
+
+
+
+
+}
+
+NTSTATUS SFAddFilter(
+	__in const wchar_t* filterName,
+	__in const wchar_t* filterDesc,
+	__in const GUID* layerKey,
+	__in const GUID* calloutKey
+)
+{
+	FWPM_FILTER Filter = { 0 };
+
+	Filter.layerKey = *layerKey;
+	Filter.displayData.name = (wchar_t*)filterName;
+	Filter.displayData.description = (wchar_t*)filterDesc;
+
+	Filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;
+	Filter.action.calloutKey = *calloutKey;
+	Filter.subLayerKey = GUID_WSTNFE_SUBLAYER;
+	Filter.weight.type = FWP_EMPTY;
+	Filter.rawContext = 0;
+
+	return FwpmFilterAdd(gEngineHandle, &Filter, NULL, NULL);
+}
+
+NTSTATUS
+SFRegisterALEClassifyCallouts(
+	__in const GUID* layerKey,
+	__in const GUID* calloutKey,
+	__in void* DeviceObject,
+	__out UINT32* calloutId
+)
+{
+	NTSTATUS Status = STATUS_SUCCESS;
+
+	FWPS_CALLOUT sCallout = { 0 };
+	FWPM_CALLOUT mCallout = { 0 };
+
+	FWPM_DISPLAY_DATA0 DisplayData = { 0 };
+
+	BOOLEAN calloutRegistered = FALSE;
+
+	sCallout.calloutKey = *calloutKey;
+
+	if (IsEqualGUID(layerKey, &FWPM_LAYER_ALE_AUTH_CONNECT_V4))
+	{
+		sCallout.classifyFn = ClassifyProxyByALERedirect;
+		//sCallout.notifyFn = WSTNFE_NotifyFn1;
+	}
+	else
+	{
+		//sCallout.classifyFn = SFALERecvAcceptClassify;
+		//sCallout.notifyFn = SFALERecvAcceptNotify;
+	}
+
+	Status = FwpsCalloutRegister(DeviceObject,
+		&sCallout,
+		calloutId);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+	calloutRegistered = TRUE;
+
+	DisplayData.name = L"Transport SimpleFirewall ALE Classify Callout";
+	DisplayData.description = L"Intercepts inbound or outbound connect attempts";
+
+	mCallout.calloutKey = *calloutKey;
+
+
+	Status = FwpmCalloutAdd(gEngineHandle,
+		&mCallout,
+		NULL,
+		NULL);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+	Status = SFAddFilter(L"Transport SimpleFirewall ALE Classify",
+		L"Intercepts inbound or outbound connect attempts",
+		layerKey,
+		calloutKey);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+Exit:
+
+	if (!NT_SUCCESS(Status))
+	{
+		if (calloutRegistered)
+		{
+			FwpsCalloutUnregisterById0(*calloutId);
+			*calloutId = 0;
+		}
+	}
+
+	return Status;
+}
+
+
+
+NTSTATUS
+SFRegistryCallouts(
+	__in PDEVICE_OBJECT DeviceObject
+)
+{
+	NTSTATUS        Status = STATUS_SUCCESS;
+	BOOLEAN         EngineOpened = FALSE;
+	BOOLEAN         InTransaction = FALSE;
+	FWPM_SESSION0   Session = { 0 };
+	FWPM_SUBLAYER0  FirewallSubLayer;
+
+	Session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+
+	Status = FwpmEngineOpen0(NULL,
+		RPC_C_AUTHN_WINNT,
+		NULL,
+		&Session,
+		&gEngineHandle);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+	EngineOpened = TRUE;
+
+	Status = FwpmTransactionBegin0(gEngineHandle, 0);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+	InTransaction = TRUE;
+
+	RtlZeroMemory(&FirewallSubLayer, sizeof(FWPM_SUBLAYER0));
+
+	FirewallSubLayer.subLayerKey = GUID_WSTNFE_SUBLAYER;
+	FirewallSubLayer.displayData.name = L"Transport SimpleFirewall Sub-Layer";
+	FirewallSubLayer.displayData.description = L"Sub-Layer for use by Transport SimpleFirewall callouts";
+	FirewallSubLayer.flags = 0;
+	FirewallSubLayer.weight = 0;
+
+	Status = FwpmSubLayerAdd0(gEngineHandle, &FirewallSubLayer, NULL);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+	Status = SFRegisterALEClassifyCallouts(&FWPM_LAYER_ALE_CONNECT_REDIRECT_V4,
+		&GUID_REDIRECT_CALLOUT,
+		DeviceObject,
+		&gAleConnectCalloutIdV4);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+#if 0
+	Status = SFRegisterALEClassifyCallouts(&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+		&SF_ALE_RECV_ACCEPT_CALLOUT_V4,
+		DeviceObject,
+		&gAleRecvAcceptCalloutIdV4);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+#endif
+
+
+	Status = FwpmTransactionCommit0(gEngineHandle);
+
+	if (!NT_SUCCESS(Status))
+	{
+		goto Exit;
+	}
+
+	InTransaction = FALSE;
+
+Exit:
+
+	if (!NT_SUCCESS(Status))
+	{
+		if (InTransaction)
+		{
+			FwpmTransactionAbort0(gEngineHandle);
+		}
+
+		if (EngineOpened)
+		{
+			FwpmEngineClose0(gEngineHandle);
+			gEngineHandle = NULL;
+		}
+	}
+
+	return Status;
+}
+
+
+
+void
+SFDeregistryCallouts(
+	__in PDEVICE_OBJECT DeviceObject
+)
+{
+	UNREFERENCED_PARAMETER(DeviceObject);
+
+	FwpmEngineClose0(gEngineHandle);
+	gEngineHandle = NULL;
+
+	FwpsCalloutUnregisterById0(gAleConnectCalloutIdV4);
+	//FwpsCalloutUnregisterById0(gAleRecvAcceptCalloutIdV4);
+}
+
+
+
+
+
+
